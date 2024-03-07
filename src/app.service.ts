@@ -10,6 +10,65 @@ export class AppService {
   }
 
   async identify(email?: string, phoneNumber?: string) {
+    if (!email || !phoneNumber) {
+      const firstContact = await this.prisma.contact.findFirst({
+        where: {
+          OR: [
+            {
+              email: email,
+            },
+            {
+              phoneNumber: phoneNumber,
+            },
+          ],
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      });
+      if (firstContact.linkPrecedence === 'primary') {
+        const response: ContactResponseDto = {
+          contact: {
+            primaryContatctId: firstContact.id,
+            emails: [firstContact.email],
+            phoneNumbers: [firstContact.phoneNumber],
+            secondaryContactIds: [],
+          },
+        };
+        return response;
+      }
+      const primaryContact = await this.prisma.contact.findUnique({
+        where: {
+          id: firstContact.linkedId,
+        },
+      });
+      const allContacts = await this.prisma.contact.findMany({
+        where: {
+          OR: [
+            {
+              email: primaryContact.email,
+            },
+            {
+              phoneNumber: primaryContact.phoneNumber,
+            },
+          ],
+        },
+      });
+      allContacts.unshift(primaryContact);
+      const response: ContactResponseDto = {
+        contact: {
+          primaryContatctId: primaryContact.id,
+          emails: [...new Set(allContacts.map((x) => x.email))],
+          phoneNumbers: [...new Set(allContacts.map((x) => x.phoneNumber))],
+          secondaryContactIds: [
+            ...allContacts
+              .filter((x) => x.linkPrecedence === 'secondary')
+              .map((x) => x.id),
+          ],
+        },
+      };
+      return response;
+    }
     const allContacts = await this.prisma.contact.findMany({
       where: {
         OR: [
@@ -20,7 +79,7 @@ export class AppService {
             phoneNumber: phoneNumber,
           },
         ],
-      },
+      }, 
     });
     const primaryContacts = allContacts.filter((x) => {
       return x.linkPrecedence === 'primary';
@@ -47,25 +106,7 @@ export class AppService {
     }
 
     if (email && phoneNumber) {
-      // Secondary Contact Creation
-      const existingContact = allContacts.find((x) => {
-        return x.email === email && x.phoneNumber === phoneNumber;
-      });
-      if (!existingContact) {
-        const parentContact = primaryContacts.find((x) => {
-          return x.email === email || x.phoneNumber === phoneNumber;
-        });
-        const contact = await this.prisma.contact.create({
-          data: {
-            phoneNumber: phoneNumber,
-            email: email,
-            linkPrecedence: 'secondary',
-            linkedId: parentContact.id,
-          },
-        });
-        allContacts.push(contact);
-      }
-
+      let flag = true;
       // Primary Contacts Turning Secondary
       const parentContacts = primaryContacts.filter((x) => {
         return x.email === email || x.phoneNumber === phoneNumber;
@@ -80,8 +121,39 @@ export class AppService {
             x.phoneNumber === parentContacts[1].phoneNumber
           );
         });
+        await this.prisma.contact.update({
+          where: {
+            id: parentContacts[1].id,
+          },
+          data: {
+            linkedId: parentContacts[0].id,
+            linkPrecedence: 'secondary',
+          },
+        });
         allContacts[indexOfUpdatedContact].linkPrecedence = 'secondary';
         allContacts[indexOfUpdatedContact].linkedId = parentContacts[0].id;
+        flag = false;
+      }
+
+      if (flag) {
+        // Secondary Contact Creation
+        const existingContact = allContacts.find((x) => {
+          return x.email === email && x.phoneNumber === phoneNumber;
+        });
+        if (!existingContact) {
+          const parentContact = primaryContacts.find((x) => {
+            return x.email === email || x.phoneNumber === phoneNumber;
+          });
+          const contact = await this.prisma.contact.create({
+            data: {
+              phoneNumber: phoneNumber,
+              email: email,
+              linkPrecedence: 'secondary',
+              linkedId: parentContact.id,
+            },
+          });
+          allContacts.push(contact);
+        }
       }
     }
 
@@ -95,8 +167,8 @@ export class AppService {
     const response: ContactResponseDto = {
       contact: {
         primaryContatctId: primaryContact.id,
-        emails: [...new Set(allContacts.map(x => x.email))],
-        phoneNumbers: [...new Set(allContacts.map(x => x.phoneNumber))],
+        emails: [...new Set(allContacts.map((x) => x.email))],
+        phoneNumbers: [...new Set(allContacts.map((x) => x.phoneNumber))],
         secondaryContactIds: [
           ...allContacts
             .filter((x) => x.linkPrecedence === 'secondary')
